@@ -4,6 +4,7 @@ export interface Env {
   AUTH_BASE_URL: string;
   AUTH_APP_ID: string;
   AUTH_APP_SECRET: string;
+  ADMIN_PASSWORDS: string;
 }
 
 const COOKIE_NAME = "archive_jwt";
@@ -220,6 +221,60 @@ async function handleVideoDetail(slug: string, env: Env): Promise<Response> {
   });
 }
 
+function timingSafeEqual(a: string, b: string): boolean {
+  const aBytes = new TextEncoder().encode(a);
+  const bBytes = new TextEncoder().encode(b);
+  if (aBytes.length !== bBytes.length) return false;
+  let diff = 0;
+  for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
+  return diff === 0;
+}
+
+function checkAdminPassword(password: string, env: Env): boolean {
+  const validPasswords = env.ADMIN_PASSWORDS.split(",").map((p) => p.trim()).filter(Boolean);
+  return validPasswords.length > 0 && validPasswords.some((p) => timingSafeEqual(password, p));
+}
+
+async function getContentStats(env: Env) {
+  const row = await env.DB.prepare(
+    `SELECT
+       COUNT(DISTINCT COALESCE(franchise_slug, 'unsorted')) AS franchises,
+       COUNT(DISTINCT COALESCE(franchise_slug, 'unsorted') || '/' || COALESCE(live_slug, slug)) AS lives,
+       COUNT(*) AS videos,
+       COALESCE(SUM(duration_seconds), 0) AS total_duration_seconds,
+       COALESCE(SUM(segment_count), 0) AS total_segments
+     FROM videos`
+  ).first<{
+    franchises: number;
+    lives: number;
+    videos: number;
+    total_duration_seconds: number;
+    total_segments: number;
+  }>();
+  return row;
+}
+
+async function handleAdminStats(request: Request, env: Env): Promise<Response> {
+  const body = await request.json().catch(() => null) as { password?: string } | null;
+  const password = body?.password ?? "";
+  if (!checkAdminPassword(password, env)) {
+    return json({ error: "unauthorized" }, 401);
+  }
+
+  const [content, userStatsRes] = await Promise.all([
+    getContentStats(env),
+    fetch(`${env.AUTH_BASE_URL}/api/admin/stats`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    }).catch(() => null),
+  ]);
+
+  const users = userStatsRes?.ok ? await userStatsRes.json() : null;
+
+  return json({ content, users });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -230,6 +285,10 @@ export default {
     }
     if (pathname === "/api/callback") {
       return handleCallback(request, env);
+    }
+
+    if (pathname === "/api/admin/stats" && request.method === "POST") {
+      return handleAdminStats(request, env);
     }
 
     if (pathname.startsWith("/api/")) {

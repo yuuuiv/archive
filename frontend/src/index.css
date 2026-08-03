@@ -12,8 +12,6 @@
   --radius-md: 16px;
   --radius-lg: 22px;
 
-  --ring-radius: 260px;
-
   /* light theme */
   --bg: #f4f4f7;
   --bg-elevated: #ffffff;
@@ -493,44 +491,18 @@ img {
   }
 }
 
-/* ---------- ring carousel ---------- */
+/* ---------- content grid ---------- */
 
-.ring-section {
-  position: relative;
-}
-
-.ring-sticky {
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-
-.ring-perspective {
-  width: 100%;
-  height: 420px;
-  perspective: 1400px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.ring {
-  position: relative;
-  width: 1px;
-  height: 1px;
-  transform-style: preserve-3d;
+.ring-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 28px;
+  padding: 28px 20px 64px;
+  max-width: 1200px;
+  margin: 0 auto;
 }
 
 .ring-card {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 220px;
   border: none;
   padding: 0;
   background: none;
@@ -539,7 +511,6 @@ img {
   flex-direction: column;
   gap: 10px;
   text-align: left;
-  transition: opacity 0.15s linear;
 }
 
 .ring-card-poster {
@@ -552,6 +523,11 @@ img {
   box-shadow: var(--shadow-card);
   border: 1px solid var(--border);
   transition: box-shadow 0.3s var(--ease-ios), transform 0.3s var(--ease-ios);
+}
+
+.ring-card:hover .ring-card-poster {
+  box-shadow: var(--shadow-float);
+  transform: translateY(-2px);
 }
 
 .ring-card-poster img {
@@ -578,11 +554,6 @@ img {
   color: var(--accent);
 }
 
-.ring-card-active .ring-card-poster {
-  box-shadow: var(--shadow-float);
-  transform: scale(1.05);
-}
-
 .ring-card-meta {
   display: flex;
   flex-direction: column;
@@ -600,12 +571,6 @@ img {
 
 .ring-card-sub {
   font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.ring-hint {
-  margin-top: 28px;
-  font-size: 13px;
   color: var(--text-secondary);
 }
 
@@ -737,17 +702,10 @@ img {
 /* ---------- responsive ---------- */
 
 @media (max-width: 720px) {
-  :root {
-    --ring-radius: 150px;
-  }
-
-  .ring-perspective {
-    height: 320px;
-    perspective: 900px;
-  }
-
-  .ring-card {
-    width: 160px;
+  .ring-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 20px;
+    padding: 20px 14px 48px;
   }
 
   .player-page {

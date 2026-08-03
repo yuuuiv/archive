@@ -28,7 +28,6 @@ export function FranchiseScene({ franchise }: { franchise: FranchiseGroup }) {
         }))}
         onSelect={(liveSlug) => navigate(`/f/${franchise.slug}/l/${liveSlug}`)}
         emptyMessage="这个企划还没有场次。"
-        hint="继续滚动浏览更多场次"
       />
     </section>
   )

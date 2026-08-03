@@ -16,8 +16,10 @@ archive/
     process.ps1             ffmpeg 切片 + 封面 + 分段大小校验
     upload.py                限速上传 Telegram + 边传边写 D1，断点续传
     import-manifest.ps1     旧版一次性导入脚本（正常流程用 upload.py 就够，不用单独跑这个）
+    set-live-poster.py      给某个 live 传自定义目录封面（见下方"场次封面图"）
   schema/schema.sql          D1 建表语句
   manifests/                 每个视频的清单备份（slug ↔ Telegram file_id 映射 + 元数据），务必保留
+  covers/                    自定义 live 封面原图，本地暂存，已 gitignore
 ```
 
 ## 环境准备
@@ -85,6 +87,19 @@ python scripts/upload.py --slug 231021-hasunosora-1st-fukuoka-day1 \
 
 D1 已经是最新的，前端马上能看到。不需要额外跑导入脚本或重新部署 Worker。
 
+## 场次(live) 封面图
+
+目录网格里每个 live 卡片默认用该 live 第一个文件的视频截图当封面。想换成官方主视觉之类的自定义图（跟任何一个视频的截图无关，单独存）：
+
+1. 把图片扔进 `covers/`（已 gitignore，本地暂存用）。文件名扩展名不重要——脚本按实际内容识别，浏览器把图片存成 `.htm` 也一样能传。
+2. ```bash
+   python scripts/set-live-poster.py --franchise-slug hasunosora --live-slug 1st --image "covers/1st Live Tour.htm"
+   ```
+3. 脚本会自动把图按长边等比缩放塞进 16:9 画布、多出来的边补白（网格卡片是 `object-fit: cover`，原图不是 16:9 会被裁，先补白避免裁到内容），传到 Telegram，写进 D1 的 `live_posters` 表。海报 URL 带版本号，刷新网站立刻生效，不用清缓存、不用重新部署。
+4. 同一个 `franchise-slug`/`live-slug` 再跑一次就是换图（覆盖），不会重复建行。
+
+视频自己详情页的封面（`process.ps1` 截的第一帧）跟这个是两回事，互不影响。
+
 ## 部署 Worker / 前端
 
 ```bash
@@ -101,9 +116,11 @@ npx wrangler d1 execute cerise-archive --remote --file=schema/schema.sql
 
 ## 数据结构
 
-`videos` 表一行 = 一个上传的文件（对应一个 `.ts` 源文件切出来的一场 HLS）。`franchise_slug`/`live_slug` 把多个文件分组成"企划 → 场次(live) → 文件"三层，前端首页按这个结构渲染（企划间滚动切场景，场次间滚动 3D 轮播，场次详情页滚动切文件）。没填归属信息的视频会归到"未分类"，不会消失。
+`videos` 表一行 = 一个上传的文件（对应一个 `.ts` 源文件切出来的一场 HLS）。`franchise_slug`/`live_slug` 把多个文件分组成"企划 → 场次(live) → 文件"三层，前端首页按这个结构渲染（企划间滚动切场景，场次网格里点场次进详情页，详情页滚动切文件）。没填归属信息的视频会归到"未分类"，不会消失。
 
 `segments` 表一行 = 一个 HLS 分段，存 Telegram `file_id` 和真实时长（不是固定 4 秒，末尾分段通常更短）。`media` Worker 请求 `master.m3u8` 时**实时**从这张表拼播放列表，不存静态文本——2000+ 分段的视频存成一整段文本会直接撑爆 D1 单条 SQL 语句体积上限。
+
+`live_posters` 表（`franchise_slug` + `live_slug` 为主键）存目录网格卡片的自定义封面，没有对应行时前端退回用该 live 第一个文件的 poster。
 
 ## 已知限制
 

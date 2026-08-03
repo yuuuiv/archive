@@ -100,9 +100,10 @@ export default {
     }
 
     const url = new URL(request.url);
-    const match = url.pathname.match(/^\/([^/]+)\/([^/]+)$/);
-    if (!match) return new Response("Not found", { status: 404, headers: corsHeaders() });
-    const [, slug, file] = match;
+    const liveMatch = url.pathname.match(/^\/live-poster\/([^/]+)\/([^/]+)\.jpg$/);
+    const match = liveMatch ? null : url.pathname.match(/^\/([^/]+)\/([^/]+)$/);
+    if (!liveMatch && !match) return new Response("Not found", { status: 404, headers: corsHeaders() });
+    const [, slug, file] = match ?? ["", "", ""];
 
     const jwt = getCookie(request, COOKIE_NAME);
     const authorized = jwt ? await verifyJwt(jwt, env.AUTH_APP_SECRET) : false;
@@ -123,7 +124,18 @@ export default {
     let cacheSeconds: number;
     let cacheImmutable = true;
 
-    if (file === "master.m3u8") {
+    if (liveMatch) {
+      const [, franchiseSlug, liveSlug] = liveMatch;
+      const row = await env.DB.prepare(
+        "SELECT poster_file_id FROM live_posters WHERE franchise_slug = ? AND live_slug = ?"
+      )
+        .bind(franchiseSlug, liveSlug)
+        .first<{ poster_file_id: string }>();
+      if (!row?.poster_file_id) return new Response("Not found", { status: 404, headers: corsHeaders() });
+      body = await fetchTelegramFile(row.poster_file_id, env.TELEGRAM_BOT_TOKEN);
+      contentType = "image/jpeg";
+      cacheSeconds = SEGMENT_CACHE_SECONDS;
+    } else if (file === "master.m3u8") {
       const video = await env.DB.prepare("SELECT segment_count FROM videos WHERE slug = ?")
         .bind(slug)
         .first<{ segment_count: number }>();

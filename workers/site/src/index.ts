@@ -114,14 +114,22 @@ type VideoRow = {
   franchise_name: string | null;
   live_slug: string | null;
   live_name: string | null;
+  poster_file_id: string | null;
 };
 
 const VIDEO_SELECT = `
   SELECT v.slug, v.title, v.date, v.duration_seconds, v.segment_count,
-         v.franchise_slug, v.franchise_name, v.live_slug, v.live_name,
+         v.franchise_slug, v.franchise_name, v.live_slug, v.live_name, v.poster_file_id,
          (SELECT COUNT(*) FROM segments s WHERE s.slug = v.slug) AS uploaded_segments
   FROM videos v
 `;
+
+// poster.jpg 的 URL 只按 slug 固定，但海报内容可以被重新上传替换；
+// 不带版本号的话，边缘缓存和浏览器缓存（Cache-Control immutable）会一直吐旧图。
+// 带上 file_id 的尾巴当版本号，海报一换 URL 就变，天然绕开缓存，不用手动清缓存。
+function posterVersion(fileId: string | null): string {
+  return fileId ? `?v=${encodeURIComponent(fileId.slice(-16))}` : "";
+}
 
 function toFileSummary(v: VideoRow) {
   return {
@@ -131,7 +139,7 @@ function toFileSummary(v: VideoRow) {
     duration_seconds: v.duration_seconds,
     segment_count: v.segment_count,
     uploaded_segments: v.uploaded_segments,
-    poster_url: `${MEDIA_BASE}/${v.slug}/poster.jpg`,
+    poster_url: `${MEDIA_BASE}/${v.slug}/poster.jpg${posterVersion(v.poster_file_id)}`,
   };
 }
 
@@ -140,9 +148,16 @@ const UNSORTED_FRANCHISE = { slug: "unsorted", name: "未分类" };
 
 async function handleVideoNav(env: Env): Promise<Response> {
   const { results } = await env.DB.prepare(
-    `${VIDEO_SELECT} ORDER BY v.franchise_slug, v.live_slug, v.date, v.slug`
+    `${VIDEO_SELECT} ORDER BY v.franchise_slug, v.date, v.slug`
   ).all<VideoRow>();
   const rows = results ?? [];
+
+  const { results: posterRows } = await env.DB.prepare(
+    "SELECT franchise_slug, live_slug, poster_file_id FROM live_posters"
+  ).all<{ franchise_slug: string; live_slug: string; poster_file_id: string }>();
+  const livePosters = new Map(
+    (posterRows ?? []).map((r) => [`${r.franchise_slug}/${r.live_slug}`, r.poster_file_id])
+  );
 
   const franchiseOrder: string[] = [];
   const franchises = new Map<
@@ -175,10 +190,14 @@ async function handleVideoNav(env: Env): Promise<Response> {
       name: franchise.name,
       lives: franchise.liveOrder.map((lSlug) => {
         const live = franchise.lives.get(lSlug)!;
+        const livePosterFileId = livePosters.get(`${fSlug}/${lSlug}`);
+        const poster_url = livePosterFileId
+          ? `${MEDIA_BASE}/live-poster/${fSlug}/${lSlug}.jpg${posterVersion(livePosterFileId)}`
+          : live.files[0]?.poster_url ?? "";
         return {
           slug: live.slug,
           name: live.name,
-          poster_url: live.files[0]?.poster_url ?? "",
+          poster_url,
           files: live.files,
         };
       }),
@@ -193,9 +212,10 @@ async function handleVideoDetail(slug: string, env: Env): Promise<Response> {
     .bind(slug)
     .first<VideoRow>();
   if (!row) return json({ error: "not found" }, 404);
+  const { poster_file_id, ...rest } = row;
   return json({
-    ...row,
-    poster_url: `${MEDIA_BASE}/${row.slug}/poster.jpg`,
+    ...rest,
+    poster_url: `${MEDIA_BASE}/${row.slug}/poster.jpg${posterVersion(poster_file_id)}`,
     m3u8_url: `${MEDIA_BASE}/${row.slug}/master.m3u8`,
   });
 }

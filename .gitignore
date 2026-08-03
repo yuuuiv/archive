@@ -1,0 +1,23 @@
+# 密钥
+.env
+
+# 依赖
+node_modules/
+
+# Python 字节码缓存
+__pycache__/
+*.pyc
+
+# 构建产物
+frontend/dist/
+*.tsbuildinfo
+
+# Wrangler 本地状态/缓存
+.wrangler/
+
+# 本地 Claude Code 设置
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db

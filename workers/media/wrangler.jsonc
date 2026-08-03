@@ -1,0 +1,15 @@
+{
+  "name": "cerise-archive-media",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-11-01",
+  "routes": [
+    { "pattern": "media.cerise-bouquet.xyz", "custom_domain": true }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cerise-archive",
+      "database_id": "18bf3378-9f06-4d1a-8db1-ba2be2526c75"
+    }
+  ]
+}

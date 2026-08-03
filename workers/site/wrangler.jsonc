@@ -1,0 +1,25 @@
+{
+  "name": "cerise-archive-site",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-11-01",
+  "routes": [
+    { "pattern": "archive.cerise-bouquet.xyz", "custom_domain": true }
+  ],
+  "vars": {
+    "AUTH_BASE_URL": "https://auth-archive.vercel.app",
+    "AUTH_APP_ID": "archive"
+  },
+  "assets": {
+    "directory": "../../frontend/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cerise-archive",
+      "database_id": "18bf3378-9f06-4d1a-8db1-ba2be2526c75"
+    }
+  ]
+}

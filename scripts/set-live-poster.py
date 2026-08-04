@@ -22,13 +22,24 @@ from PIL import Image
 COVER_W, COVER_H = 1280, 720
 
 
-def letterbox(src: Path) -> Path:
-    img = Image.open(src).convert("RGB")
+def letterbox(src: Path, align: str = "center") -> Path:
+    img = Image.open(src)
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        # 直接 .convert("RGB") 会把透明区域原样丢 alpha，留下底下未预乘的垃圾颜色；
+        # 先合成到白底上再转 RGB，透明部分才会是真正的白色。
+        img = img.convert("RGBA")
+        flat = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        img = Image.alpha_composite(flat, img).convert("RGB")
+    else:
+        img = img.convert("RGB")
+
     scale = min(COVER_W / img.width, COVER_H / img.height)
     new_w, new_h = round(img.width * scale), round(img.height * scale)
     resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
     canvas = Image.new("RGB", (COVER_W, COVER_H), "white")
-    canvas.paste(resized, ((COVER_W - new_w) // 2, (COVER_H - new_h) // 2))
+    x = (COVER_W - new_w) // 2
+    y = (COVER_H - new_h) if align == "bottom" else (COVER_H - new_h) // 2
+    canvas.paste(resized, (x, y))
     out = Path(tempfile.gettempdir()) / f"{src.stem}.cover.jpg"
     canvas.save(out, "JPEG", quality=92)
     return out
@@ -81,6 +92,10 @@ def main():
     parser.add_argument("--franchise-slug", required=True)
     parser.add_argument("--live-slug", required=True)
     parser.add_argument("--image", required=True, type=Path)
+    parser.add_argument(
+        "--align", choices=["center", "bottom"], default="center",
+        help="缩放后贴到画布的位置，人物类立绘通常用 bottom 避免脚被留白顶起来",
+    )
     args = parser.parse_args()
 
     if not args.image.exists():
@@ -89,7 +104,7 @@ def main():
     env = load_env(REPO_ROOT / ".env")
     token, chat_id = env["token"], env["chat_id"]
 
-    cover_path = letterbox(args.image)
+    cover_path = letterbox(args.image, args.align)
     try:
         with open(cover_path, "rb") as f:
             resp = requests.post(

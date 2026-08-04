@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -25,7 +26,9 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TELEGRAM_BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024
-D1_BATCH_SIZE = 20
+# 100 而不是更小：每次 flush 都是一次 `npx wrangler d1 execute` 进程冷启动 + API 往返，
+# 批越大次数越少，这块开销摊得越薄（实测这曾占整趟上传总时长的三成左右）。
+D1_BATCH_SIZE = 100
 D1_DATABASE = "cerise-archive"
 
 
@@ -116,15 +119,10 @@ ON CONFLICT(slug) DO UPDATE SET
     with_retry(lambda: d1_execute(sql))
 
 
-def flush_segments_to_d1(slug: str, pending: list, manifest: dict, save):
-    """写入 D1 成功后，把这批 seg_name 记进 manifest['d1_synced'] 并落盘——
-    跟 Telegram 上传断点用同一套本地文件 checkpoint 机制，重启只补真正缺的那一小撮，
-    不用反过来查 D1（那条路径在这台机器上试过，wrangler CLI 的 --json 输出偶尔不稳定）。"""
-    if not pending:
-        return
+def _flush_segments_to_d1(slug: str, batch: list, manifest: dict, save_locked):
     values = ", ".join(
         f"('{sql_escape(slug)}', '{sql_escape(seg_name)}', '{sql_escape(file_id)}', {duration})"
-        for seg_name, file_id, duration in pending
+        for seg_name, file_id, duration in batch
     )
     sql = (
         "INSERT INTO segments (slug, seg_name, file_id, duration_seconds) "
@@ -134,10 +132,50 @@ def flush_segments_to_d1(slug: str, pending: list, manifest: dict, save):
     )
     with_retry(lambda: d1_execute(sql))
     synced = set(manifest.get("d1_synced", []))
-    synced.update(seg_name for seg_name, _, _ in pending)
+    synced.update(seg_name for seg_name, _, _ in batch)
     manifest["d1_synced"] = sorted(synced)
-    save()
-    pending.clear()
+    save_locked()
+
+
+class AsyncD1Flusher:
+    """把 D1 批量写放到后台线程做，不卡住限速主循环。
+
+    `npx wrangler d1 execute` 每次调用都是一次进程冷启动 + API 往返，实测这部分
+    （尤其是撞上这台机器网络代理偶发抽风触发重试时）能占掉整趟上传三成左右的时间——
+    但主循环反正要为限速等 3.5 秒，这段等待时间足够背景线程把上一批 D1 写完，相当于
+    把这块开销"藏"在本来就要等的时间里，不需要额外等待。
+
+    同一时刻只允许一个 flush 在飞（开新的之前先 join 上一个），避免 manifest['d1_synced']
+    和落盘并发写出竞态；所有 save() 调用（含主循环里逐段那次）都要过同一把锁，
+    否则两个线程同时写同一个文件可能在磁盘层面写花。
+    """
+
+    def __init__(self, save, save_lock: threading.Lock):
+        self._save = save
+        self._lock = save_lock
+        self._thread: threading.Thread | None = None
+
+    def _save_locked(self):
+        with self._lock:
+            self._save()
+
+    def flush_async(self, slug: str, pending: list, manifest: dict):
+        if not pending:
+            return
+        self.join()
+        batch = list(pending)
+        pending.clear()
+        self._thread = threading.Thread(
+            target=_flush_segments_to_d1,
+            args=(slug, batch, manifest, self._save_locked),
+            daemon=True,
+        )
+        self._thread.start()
+
+    def join(self):
+        if self._thread is not None:
+            self._thread.join()
+            self._thread = None
 
 
 class RateLimiter:
@@ -242,8 +280,16 @@ def main():
             "live_name": args.live_name,
         }
 
+    save_lock = threading.Lock()
+
     def save():
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def save_locked():
+        with save_lock:
+            save()
+
+    flusher = AsyncD1Flusher(save, save_lock)
 
     # --meta-file 走文件读取而不是命令行参数，不会有中文经 argv 传递被损坏的问题；
     # 每次运行只要给了这个参数就覆盖，方便修正已有 manifest 里之前传坏的字段。
@@ -264,7 +310,7 @@ def main():
         manifest["poster_file_id"] = with_retry(
             lambda: send_document(session, token, chat_id, poster_path, limiter)
         )
-        save()
+        save_locked()
         print("  poster uploaded")
 
     # 视频行立刻 upsert 到 D1，观众马上能在列表里看到（分段还在陆续上传）
@@ -285,8 +331,9 @@ def main():
         filename = f"seg_{seg_name}.ts"
         pending_d1.append((seg_name, file_id, durations.get(filename, 4.0)))
         if len(pending_d1) >= args.d1_batch_size:
-            flush_segments_to_d1(args.slug, pending_d1, manifest, save)
-    flush_segments_to_d1(args.slug, pending_d1, manifest, save)
+            flusher.flush_async(args.slug, pending_d1, manifest)
+    flusher.flush_async(args.slug, pending_d1, manifest)
+    flusher.join()
     if synced:
         print(f"  {len(synced)} segments already synced to D1, backfilled {len(manifest['segments']) - len(synced)} more")
 
@@ -296,13 +343,14 @@ def main():
             continue
         file_id = with_retry(lambda: send_document(session, token, chat_id, seg_path, limiter))
         manifest["segments"][idx] = file_id
-        save()
+        save_locked()
         pending_d1.append((idx, file_id, durations.get(seg_path.name, 4.0)))
         print(f"  [{len(manifest['segments'])}/{len(segments)}] {seg_path.name} uploaded")
         if len(pending_d1) >= args.d1_batch_size:
-            flush_segments_to_d1(args.slug, pending_d1, manifest, save)
+            flusher.flush_async(args.slug, pending_d1, manifest)
 
-    flush_segments_to_d1(args.slug, pending_d1, manifest, save)
+    flusher.flush_async(args.slug, pending_d1, manifest)
+    flusher.join()
 
     print(f"Done: {manifest_path}")
 

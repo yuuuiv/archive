@@ -70,7 +70,55 @@ export function VideoPlayer() {
     })
     artRef.current = art
 
+    // ---- 播放埋点 ----
+    // 每秒采样一次：只在真正处于播放状态时累加观看秒数，暂停/缓冲/拖动都不计，
+    // 所以"观看时长"是实际看进去的时间，不会被挂着页面刷出来。
+    const sessionId = crypto.randomUUID()
+    let watchedSeconds = 0
+    let maxPosition = 0
+    let pendingReport = false
+
+    const sample = window.setInterval(() => {
+      const el = art.video
+      if (!el) return
+      if (!el.paused && !el.ended && el.readyState >= 2) {
+        watchedSeconds += 1
+        pendingReport = true
+      }
+      maxPosition = Math.max(maxPosition, el.currentTime || 0)
+    }, 1000)
+
+    const report = () => {
+      // 没真正播过就不上报，避免"点开就走"污染浏览次数
+      if (!pendingReport) return
+      pendingReport = false
+      fetch('/api/playback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId,
+          slug: video.slug,
+          watched_seconds: watchedSeconds,
+          position: maxPosition,
+          duration: video.duration_seconds,
+        }),
+        keepalive: true, // 页面卸载途中也能把最后一次心跳发出去
+      }).catch(() => {})
+    }
+
+    const heartbeat = window.setInterval(report, 30000)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') report()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('pagehide', report)
+
     return () => {
+      window.clearInterval(sample)
+      window.clearInterval(heartbeat)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pagehide', report)
+      report()
       hls?.destroy()
       art.destroy()
       artRef.current = null

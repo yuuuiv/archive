@@ -1,13 +1,14 @@
 import { Link } from 'react-router'
 import { useTheme } from '../theme/ThemeProvider'
-import { ChevronLeftIcon, MenuIcon, MoonIcon, SunIcon } from './icons'
+import { ChevronLeftIcon, MenuIcon, MoonIcon, SettingsIcon, SunIcon } from './icons'
 
 type Props = {
   back?: { to: string; label: string }
   onMenuClick?: () => void
+  showAdminLink?: boolean
 }
 
-export function TopBar({ back, onMenuClick }: Props) {
+export function TopBar({ back, onMenuClick, showAdminLink }: Props) {
   const { theme, toggle } = useTheme()
 
   return (
@@ -36,15 +37,22 @@ export function TopBar({ back, onMenuClick }: Props) {
             </Link>
           )}
         </div>
-        <button
-          type="button"
-          className="theme-toggle"
-          onClick={toggle}
-          aria-label={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
-        >
-          <SunIcon className="theme-icon theme-icon-sun" />
-          <MoonIcon className="theme-icon theme-icon-moon" />
-        </button>
+        <div className="topbar-right">
+          {showAdminLink && (
+            <Link to="/admin" className="topbar-admin-entry" aria-label="管理员面板">
+              <SettingsIcon width={18} height={18} />
+            </Link>
+          )}
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={toggle}
+            aria-label={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+          >
+            <SunIcon className="theme-icon theme-icon-sun" />
+            <MoonIcon className="theme-icon theme-icon-moon" />
+          </button>
+        </div>
       </div>
     </header>
   )

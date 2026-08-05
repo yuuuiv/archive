@@ -31,7 +31,10 @@ export function Home() {
 
   return (
     <div>
-      <TopBar onMenuClick={authState === 'authed' ? () => setSidebarOpen(true) : undefined} />
+      <TopBar
+        onMenuClick={authState === 'authed' ? () => setSidebarOpen(true) : undefined}
+        showAdminLink
+      />
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} franchises={franchises ?? []} />
       <HeroScene>
         <img src="/icon.png" alt="" className="hero-logo" />

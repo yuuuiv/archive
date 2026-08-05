@@ -10,6 +10,7 @@
 """
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -93,6 +94,42 @@ def d1_execute(sql: str):
             raise RuntimeError(f"wrangler d1 execute failed: {result.stderr}")
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+
+def query_d1_segment_count(slug: str) -> int:
+    result = subprocess.run(
+        f'npx wrangler d1 execute {D1_DATABASE} --remote --json '
+        f'--command "SELECT COUNT(*) as cnt FROM segments WHERE slug=\'{sql_escape(slug)}\';"',
+        shell=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"wrangler d1 execute (count query) failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    return payload[0]["results"][0]["cnt"]
+
+
+def cleanup_local_if_synced(slug: str, hls_dir: Path, expected_count: int):
+    """上传+D1 写入都做完之后，再主动查一次 D1 里这个 slug 的分段数，
+    跟本地切片数量对上了才删本地 HLS 目录，腾地方给下一条视频切片——
+    不信任"脚本正常退出"这个信号本身，避免 D1 那次写实际没落地却把本地素材删了。"""
+    print("Verifying D1 segment count before deleting local HLS files...")
+    try:
+        synced_count = with_retry(lambda: query_d1_segment_count(slug))
+    except Exception as e:
+        print(f"  D1 verification failed, keeping local files: {e}")
+        return
+    if synced_count != expected_count:
+        print(
+            f"  D1 has {synced_count}/{expected_count} segments for {slug}, "
+            "NOT deleting local files (re-run to retry)."
+        )
+        return
+    shutil.rmtree(hls_dir)
+    print(f"  D1 confirmed {synced_count}/{expected_count} segments synced, deleted {hls_dir}")
 
 
 def upsert_video_row(manifest: dict):
@@ -244,6 +281,11 @@ def main():
     parser.add_argument("--media-base", default="https://media.cerise-bouquet.xyz")
     parser.add_argument("--rate-interval", type=float, default=3.5, help="两次上传间隔秒数")
     parser.add_argument("--d1-batch-size", type=int, default=D1_BATCH_SIZE)
+    parser.add_argument(
+        "--keep-local",
+        action="store_true",
+        help="上传完成后不删本地 HLS 目录（默认在确认 D1 分段数对齐后自动删除，腾盘给下一条切片用）",
+    )
     args = parser.parse_args()
 
     hls_dir = Path(args.hls_dir) if args.hls_dir else Path("E:/hls") / args.slug
@@ -353,6 +395,9 @@ def main():
     flusher.join()
 
     print(f"Done: {manifest_path}")
+
+    if not args.keep_local:
+        cleanup_local_if_synced(args.slug, hls_dir, len(segments))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
-import { fetchNav, formatDuration, isVideoComplete, type FranchiseGroup } from '../api'
+import {
+  fetchNav,
+  formatDuration,
+  isVideoComplete,
+  usePageTitle,
+  watchProgress,
+  type FranchiseGroup,
+} from '../api'
 import { TopBar } from '../components/TopBar'
 import { Sidebar } from '../components/Sidebar'
 import { StaggeredText } from '../components/StaggeredText'
@@ -21,6 +28,7 @@ export function LiveDetail() {
 
   const franchise = franchises?.find((f) => f.slug === franchiseSlug)
   const live = franchise?.lives.find((l) => l.slug === liveSlug)
+  usePageTitle(live ? `${live.name} · ${franchise?.name ?? ''}` : '')
 
   useEffect(() => {
     if (!live) return
@@ -57,7 +65,9 @@ export function LiveDetail() {
             <StaggeredText text={live.name} />
           </h1>
           <div className="live-file-slides">
-            {live.files.map((file) => (
+            {live.files.map((file) => {
+              const progress = watchProgress(file)
+              return (
               <Link
                 key={file.slug}
                 to={`/v/${file.slug}`}
@@ -71,15 +81,28 @@ export function LiveDetail() {
                 <span className="live-file-poster">
                   <img src={file.poster_url} crossOrigin="use-credentials" alt={file.title} loading="lazy" />
                   {!isVideoComplete(file) && <span className="ring-card-uploading">上传中</span>}
+                  {progress.started && (
+                    <span className="card-progress" aria-hidden="true">
+                      <span
+                        className={progress.done ? 'is-complete' : ''}
+                        style={{ width: `${progress.percent}%` }}
+                      />
+                    </span>
+                  )}
                 </span>
                 <span className="live-file-meta">
                   <span className="live-file-title">{file.title}</span>
                   <span className="live-file-sub">
                     {file.date} · {formatDuration(file.duration_seconds)}
+                    {progress.started &&
+                      (progress.done
+                        ? ' · 已看完'
+                        : ` · 看到 ${formatDuration(file.progress_seconds)}`)}
                   </span>
                 </span>
               </Link>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}

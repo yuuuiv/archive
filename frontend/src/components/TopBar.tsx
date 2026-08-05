@@ -1,14 +1,13 @@
 import { Link } from 'react-router'
 import { useTheme } from '../theme/ThemeProvider'
-import { ChevronLeftIcon, MenuIcon, MoonIcon, SettingsIcon, SunIcon, UserChartIcon } from './icons'
+import { ChevronLeftIcon, MenuIcon, MoonIcon, SunIcon, UserChartIcon } from './icons'
 
 type Props = {
   back?: { to: string; label: string }
   onMenuClick?: () => void
-  showAdminLink?: boolean
 }
 
-export function TopBar({ back, onMenuClick, showAdminLink }: Props) {
+export function TopBar({ back, onMenuClick }: Props) {
   const { theme, toggle } = useTheme()
 
   return (
@@ -41,11 +40,8 @@ export function TopBar({ back, onMenuClick, showAdminLink }: Props) {
           <Link to="/me" className="topbar-admin-entry" aria-label="我的观看数据">
             <UserChartIcon width={18} height={18} />
           </Link>
-          {showAdminLink && (
-            <Link to="/admin" className="topbar-admin-entry" aria-label="管理员面板">
-              <SettingsIcon width={18} height={18} />
-            </Link>
-          )}
+          {/* 管理面板入口不再挂在这里：对每个访客亮一个齿轮等于公告"这儿有后台"。
+              /admin 直接输地址照样能进，密码那道门没变。 */}
           <button
             type="button"
             className="theme-toggle"

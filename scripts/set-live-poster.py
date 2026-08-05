@@ -9,6 +9,7 @@
 图片按实际文件内容识别，扩展名无所谓（比如浏览器保存图片时错存成 .htm 也行）。
 """
 import argparse
+import json
 import subprocess
 import sys
 import tempfile
@@ -66,6 +67,27 @@ def load_env(path: Path) -> dict:
 
 def sql_escape(value: str) -> str:
     return value.replace("'", "''")
+
+
+def d1_count_videos(franchise_slug: str, live_slug: str) -> int:
+    sql = (
+        "SELECT COUNT(*) AS cnt FROM videos WHERE franchise_slug='"
+        f"{sql_escape(franchise_slug)}' AND live_slug='{sql_escape(live_slug)}';"
+    )
+    result = subprocess.run(
+        f'npx wrangler d1 execute {D1_DATABASE} --remote --json --command "{sql}"',
+        shell=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    if result.returncode != 0:
+        return -1  # 查不到就别拦着设封面，只是少一句提示
+    try:
+        return json.loads(result.stdout)[0]["results"][0]["cnt"]
+    except (json.JSONDecodeError, KeyError, IndexError):
+        return -1
 
 
 def d1_execute(sql: str):
@@ -128,6 +150,15 @@ ON CONFLICT(franchise_slug, live_slug) DO UPDATE SET poster_file_id = excluded.p
 """
     d1_execute(sql)
     print(f"live poster set: {args.franchise_slug}/{args.live_slug} -> {file_id}")
+
+    # 目录树是从 videos 表建的，一个视频都没有的场次根本不会出现在网站上。
+    # 封面照样存下来了，等视频传上去就生效——但不说一声的话，很容易以为是设失败了。
+    n = d1_count_videos(args.franchise_slug, args.live_slug)
+    if n == 0:
+        print(
+            f"  注意: {args.franchise_slug}/{args.live_slug} 目前没有任何视频，"
+            "这个场次不会显示在网站上。封面已存好，视频传上去后自动生效。"
+        )
 
 
 if __name__ == "__main__":

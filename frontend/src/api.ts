@@ -1,3 +1,5 @@
+import { useEffect } from 'react'
+
 export type FileSummary = {
   slug: string
   title: string
@@ -6,6 +8,17 @@ export type FileSummary = {
   poster_url: string
   segment_count: number
   uploaded_segments: number
+  /** 当前登录用户看到过的最远位置，秒。未登录或没看过是 0 */
+  progress_seconds: number
+}
+
+/** 看到 95% 以上就当看完了，不再显示进度条——片尾字幕没人非要拖满 */
+const WATCHED_RATIO = 0.95
+
+export function watchProgress(v: Pick<FileSummary, 'progress_seconds' | 'duration_seconds'>) {
+  if (!v.duration_seconds || !v.progress_seconds) return { percent: 0, done: false, started: false }
+  const percent = Math.min(100, (v.progress_seconds / v.duration_seconds) * 100)
+  return { percent, done: percent >= WATCHED_RATIO * 100, started: true }
 }
 
 export function isVideoComplete(v: Pick<FileSummary, 'segment_count' | 'uploaded_segments'>): boolean {
@@ -52,6 +65,14 @@ export function fetchNav(): Promise<{ franchises: FranchiseGroup[] }> {
 
 export function fetchVideo(slug: string): Promise<VideoDetail> {
   return apiFetch(`/api/videos/${slug}`)
+}
+
+/** 每个页面自己声明标题。以前全站共用 index.html 里那个 "archive"，
+ *  开几个标签页分不清谁是谁，历史记录里也全是一模一样的条目。 */
+export function usePageTitle(title: string) {
+  useEffect(() => {
+    document.title = title ? `${title} · archive-collection` : 'archive-collection'
+  }, [title])
 }
 
 export function formatDuration(seconds: number): string {

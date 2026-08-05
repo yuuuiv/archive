@@ -255,6 +255,39 @@ img {
   transform: translateX(0);
 }
 
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 14px 4px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.sidebar-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.sidebar-search input::placeholder {
+  color: var(--text-secondary);
+}
+
+.sidebar-seen {
+  margin-left: 7px;
+  font-size: 10.5px;
+  color: #34c759;
+}
+
 .sidebar-header {
   display: flex;
   align-items: center;
@@ -1292,7 +1325,101 @@ img {
   background: #34c759;
 }
 
+/* ---- 懒加载路由的占位 ---- */
+
+.route-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+
+/* ---- 卡片上的观看进度 ---- */
+
+.card-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: color-mix(in srgb, #000 35%, transparent);
+}
+
+.card-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.7s var(--ease-out);
+}
+
+.card-progress > span.is-complete {
+  background: #34c759;
+}
+
+/* ---- 播放页的续播提示 ---- */
+
+.player-resumed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.player-resumed button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.player-resumed button:hover {
+  text-decoration: underline;
+}
+
 /* ---- 我的观看数据 ---- */
+
+.mystats-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.mystats-danger {
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #ff3b30 40%, transparent);
+  background: color-mix(in srgb, #ff3b30 10%, transparent);
+  color: #ff3b30;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.25s var(--ease-ios);
+}
+
+.mystats-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, #ff3b30 18%, transparent);
+}
+
+.mystats-danger:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mystats-quiet {
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.mystats-quiet:hover {
+  color: var(--text);
+}
+
 
 .mystats-page {
   max-width: 900px;

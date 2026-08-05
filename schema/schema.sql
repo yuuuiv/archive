@@ -51,3 +51,14 @@ CREATE TABLE IF NOT EXISTS playback_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_playback_slug ON playback_sessions(slug);
 CREATE INDEX IF NOT EXISTS idx_playback_updated_at ON playback_sessions(updated_at);
+CREATE INDEX IF NOT EXISTS idx_playback_viewer ON playback_sessions(viewer_hash);
+
+-- 管理员密码的失败尝试记录。密码是唯一一道门，而且门后的 /api/admin/users
+-- 能拖走全部用户邮箱，所以必须限次——timingSafeEqual 只防时序侧信道，
+-- 防不住按边缘速度跑字典。成功登录后清掉该 IP 的记录。
+CREATE TABLE IF NOT EXISTS admin_login_attempts (
+    ip TEXT NOT NULL,
+    ts INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_attempts ON admin_login_attempts(ip, ts);

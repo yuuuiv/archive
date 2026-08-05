@@ -64,10 +64,6 @@ async function getSession(request: Request, env: Env): Promise<JwtPayload | null
   return jwt ? verifyJwt(jwt, env.AUTH_APP_SECRET) : null;
 }
 
-async function requireAuth(request: Request, env: Env): Promise<boolean> {
-  return (await getSession(request, env)) !== null;
-}
-
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -111,6 +107,21 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
   });
 }
 
+// Max-Age=0 让浏览器立刻丢掉 cookie。Domain/Path 必须跟当初 Set 的完全一致，
+// 否则浏览器会认为是另一条 cookie，原来那条纹丝不动。
+function handleLogout(): Response {
+  const cookie = [
+    `${COOKIE_NAME}=`,
+    `Domain=${COOKIE_DOMAIN}`,
+    "Path=/",
+    "HttpOnly",
+    "Secure",
+    "SameSite=Lax",
+    "Max-Age=0",
+  ].join("; ");
+  return new Response(null, { status: 302, headers: { Location: "/", "Set-Cookie": cookie } });
+}
+
 type VideoRow = {
   slug: string;
   title: string;
@@ -139,7 +150,7 @@ function posterVersion(fileId: string | null): string {
   return fileId ? `?v=${encodeURIComponent(fileId.slice(-16))}` : "";
 }
 
-function toFileSummary(v: VideoRow) {
+function toFileSummary(v: VideoRow, progress = 0) {
   return {
     slug: v.slug,
     title: v.title,
@@ -148,17 +159,32 @@ function toFileSummary(v: VideoRow) {
     segment_count: v.segment_count,
     uploaded_segments: v.uploaded_segments,
     poster_url: `${MEDIA_BASE}/${v.slug}/poster.jpg${posterVersion(v.poster_file_id)}`,
+    // 当前登录用户在这个文件上到达过的最远位置。列表卡片据此画进度条，
+    // 播放页据此续播——之前这个数只有 /me 页面能看到，从首页点进去永远从 0 开始。
+    progress_seconds: progress,
   };
+}
+
+// 某个观众在每个 slug 上的最远进度。没登录或没记录就是空表，调用方按 0 处理。
+async function getViewerProgress(env: Env, viewerHash: string | null): Promise<Map<string, number>> {
+  if (!viewerHash) return new Map();
+  const { results } = await env.DB.prepare(
+    "SELECT slug, MAX(max_position) AS pos FROM playback_sessions WHERE viewer_hash = ? GROUP BY slug"
+  )
+    .bind(viewerHash)
+    .all<{ slug: string; pos: number }>();
+  return new Map((results ?? []).map((r) => [r.slug, r.pos]));
 }
 
 // 没有企划/场次归属信息的旧数据兜底分到"未分类"，不会在列表里凭空消失
 const UNSORTED_FRANCHISE = { slug: "unsorted", name: "未分类" };
 
-async function buildVideoTree(env: Env) {
+async function buildVideoTree(env: Env, viewerHash: string | null = null) {
   const { results } = await env.DB.prepare(
     `${VIDEO_SELECT} ORDER BY v.franchise_slug, v.date, v.slug`
   ).all<VideoRow>();
   const rows = results ?? [];
+  const progress = await getViewerProgress(env, viewerHash);
 
   const { results: posterRows } = await env.DB.prepare(
     "SELECT franchise_slug, live_slug, poster_file_id FROM live_posters"
@@ -188,7 +214,7 @@ async function buildVideoTree(env: Env) {
       franchise.lives.set(lSlug, { slug: lSlug, name: lName, files: [] });
       franchise.liveOrder.push(lSlug);
     }
-    franchise.lives.get(lSlug)!.files.push(toFileSummary(row));
+    franchise.lives.get(lSlug)!.files.push(toFileSummary(row, progress.get(row.slug) ?? 0));
   }
 
   return franchiseOrder.map((fSlug) => {
@@ -213,21 +239,27 @@ async function buildVideoTree(env: Env) {
   });
 }
 
-async function handleVideoNav(env: Env): Promise<Response> {
-  const tree = await buildVideoTree(env);
+async function handleVideoNav(env: Env, viewerHash: string | null): Promise<Response> {
+  const tree = await buildVideoTree(env, viewerHash);
   return json({ franchises: tree });
 }
 
-async function handleVideoDetail(slug: string, env: Env): Promise<Response> {
+async function handleVideoDetail(
+  slug: string,
+  env: Env,
+  viewerHash: string | null
+): Promise<Response> {
   const row = await env.DB.prepare(`${VIDEO_SELECT} WHERE v.slug = ?`)
     .bind(slug)
     .first<VideoRow>();
   if (!row) return json({ error: "not found" }, 404);
   const { poster_file_id, ...rest } = row;
+  const progress = await getViewerProgress(env, viewerHash);
   return json({
     ...rest,
     poster_url: `${MEDIA_BASE}/${row.slug}/poster.jpg${posterVersion(poster_file_id)}`,
     m3u8_url: `${MEDIA_BASE}/${row.slug}/master.m3u8`,
+    progress_seconds: progress.get(row.slug) ?? 0,
   });
 }
 
@@ -353,6 +385,19 @@ async function handleMyPlayback(request: Request, env: Env): Promise<Response> {
   });
 }
 
+// 观众自己清空观看记录。同样只认服务端从 cookie 算出来的 hash，
+// 所以谁也删不掉别人的。删完统计口径里那部分播放量也一起消失，这是有意的——
+// 声称"你能删"就不能偷偷在别处留一份。
+async function handleDeleteMyPlayback(request: Request, env: Env): Promise<Response> {
+  const session = await getSession(request, env);
+  if (!session?.user_email) return json({ error: "unauthorized" }, 401);
+  const viewerHash = await sha256Hex16(session.user_email);
+  const result = await env.DB.prepare("DELETE FROM playback_sessions WHERE viewer_hash = ?")
+    .bind(viewerHash)
+    .run();
+  return json({ ok: true, deleted: result.meta?.changes ?? 0 });
+}
+
 async function getPlaybackStats(env: Env) {
   const totals = await env.DB.prepare(
     `SELECT
@@ -451,6 +496,79 @@ function checkAdminPassword(password: string, env: Env): boolean {
   return validPasswords.length > 0 && validPasswords.some((p) => timingSafeEqual(password, p));
 }
 
+// 密码只在"换 token"的那一次出现。前端存的是这个有期限的 token，不是密码本身，
+// 被 XSS 或共用浏览器捞走也只是有限时间的读权限，且改一次 ADMIN_PASSWORDS 无法吊销
+// ——所以额外用 AUTH_APP_SECRET 签名，密钥一换全部 token 立刻失效。
+const ADMIN_TOKEN_TTL_SECONDS = 12 * 60 * 60;
+const ADMIN_MAX_FAILURES = 8;
+const ADMIN_FAILURE_WINDOW_SECONDS = 15 * 60;
+
+async function hmacHex(secret: string, message: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function issueAdminToken(env: Env): Promise<string> {
+  const exp = Math.floor(Date.now() / 1000) + ADMIN_TOKEN_TTL_SECONDS;
+  return `${exp}.${await hmacHex(env.AUTH_APP_SECRET, `admin:${exp}`)}`;
+}
+
+async function verifyAdminToken(token: string, env: Env): Promise<boolean> {
+  const [expStr, sig] = token.split(".");
+  const exp = Number(expStr);
+  if (!Number.isFinite(exp) || exp <= Date.now() / 1000 || !sig) return false;
+  return timingSafeEqual(sig, await hmacHex(env.AUTH_APP_SECRET, `admin:${exp}`));
+}
+
+async function recentAdminFailures(env: Env, ip: string): Promise<number> {
+  const since = Math.floor(Date.now() / 1000) - ADMIN_FAILURE_WINDOW_SECONDS;
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM admin_login_attempts WHERE ip = ? AND ts >= ?"
+  )
+    .bind(ip, since)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/** 认证结果：ok 时带上新签的 token（用密码换来的那次才有）；失败时直接是要返回的响应。 */
+type AdminAuth = { token?: string } | Response;
+
+async function authorizeAdmin(request: Request, env: Env, body: unknown): Promise<AdminAuth> {
+  const { password = "", token = "" } = (body ?? {}) as { password?: string; token?: string };
+
+  if (token && (await verifyAdminToken(token, env))) return {};
+  if (!password) return json({ error: "unauthorized" }, 401);
+
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  if ((await recentAdminFailures(env, ip)) >= ADMIN_MAX_FAILURES) {
+    return json({ error: "too many attempts, try again later" }, 429);
+  }
+
+  if (!checkAdminPassword(password, env)) {
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO admin_login_attempts (ip, ts) VALUES (?, ?)").bind(ip, now),
+      // 顺手清掉过期记录，不另开定时任务
+      env.DB.prepare("DELETE FROM admin_login_attempts WHERE ts < ?").bind(
+        now - ADMIN_FAILURE_WINDOW_SECONDS
+      ),
+    ]);
+    return json({ error: "unauthorized" }, 401);
+  }
+
+  await env.DB.prepare("DELETE FROM admin_login_attempts WHERE ip = ?").bind(ip).run();
+  return { token: await issueAdminToken(env) };
+}
+
 async function getContentStats(env: Env) {
   const row = await env.DB.prepare(
     `SELECT
@@ -494,13 +612,18 @@ async function getContentStats(env: Env) {
   };
 }
 
-async function handleAdminStats(request: Request, env: Env): Promise<Response> {
-  const body = await request.json().catch(() => null) as { password?: string } | null;
-  const password = body?.password ?? "";
-  if (!checkAdminPassword(password, env)) {
-    return json({ error: "unauthorized" }, 401);
-  }
+// 上游 auth 网关只认密码。用 token 进来的请求手里没有密码，就拿本地配置的第一个顶上
+// ——本 worker 已经独立验过身份了，这一步只是代它去取账号数据。
+function upstreamAdminPassword(env: Env, provided: string): string {
+  return provided || env.ADMIN_PASSWORDS.split(",")[0]?.trim() || "";
+}
 
+async function handleAdminStats(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as { password?: string; token?: string } | null;
+  const auth = await authorizeAdmin(request, env, body);
+  if (auth instanceof Response) return auth;
+
+  const password = upstreamAdminPassword(env, body?.password ?? "");
   const [content, videos, playback, userStatsRes] = await Promise.all([
     getContentStats(env),
     buildVideoTree(env),
@@ -514,25 +637,23 @@ async function handleAdminStats(request: Request, env: Env): Promise<Response> {
 
   const users = userStatsRes?.ok ? await userStatsRes.json() : null;
 
-  return json({ content, videos, playback, users });
+  return json({ content, videos, playback, users, token: auth.token });
 }
 
 // 账号明细列表单独一个接口：数据量比统计大，只有前端切到"账号"页签才拉，
 // 密码同样只在服务端转发给 auth 网关，不经浏览器直连跨域。
 async function handleAdminUsers(request: Request, env: Env): Promise<Response> {
   const body = (await request.json().catch(() => null)) as
-    | { password?: string; limit?: number; offset?: number; query?: string }
+    | { password?: string; token?: string; limit?: number; offset?: number; query?: string }
     | null;
-  const password = body?.password ?? "";
-  if (!checkAdminPassword(password, env)) {
-    return json({ error: "unauthorized" }, 401);
-  }
+  const auth = await authorizeAdmin(request, env, body);
+  if (auth instanceof Response) return auth;
 
   const res = await fetch(`${env.AUTH_BASE_URL}/api/admin/users`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      password,
+      password: upstreamAdminPassword(env, body?.password ?? ""),
       limit: body?.limit ?? 50,
       offset: body?.offset ?? 0,
       query: body?.query ?? "",
@@ -556,6 +677,10 @@ export default {
     if (pathname === "/api/callback") {
       return handleCallback(request, env);
     }
+    // 登出要在鉴权之前：cookie 已经过期的人同样得能把它清掉
+    if (pathname === "/api/logout") {
+      return handleLogout();
+    }
 
     if (pathname === "/api/admin/stats" && request.method === "POST") {
       return handleAdminStats(request, env);
@@ -565,21 +690,25 @@ export default {
     }
 
     if (pathname.startsWith("/api/")) {
-      if (!(await requireAuth(request, env))) {
+      const session = await getSession(request, env);
+      if (!session) {
         return json({ error: "unauthorized" }, 401);
       }
+      const viewerHash = session.user_email ? await sha256Hex16(session.user_email) : null;
       if (pathname === "/api/videos") {
-        return handleVideoNav(env);
+        return handleVideoNav(env, viewerHash);
       }
       if (pathname === "/api/playback" && request.method === "POST") {
         return handlePlaybackBeacon(request, env);
       }
       if (pathname === "/api/me/playback") {
-        return handleMyPlayback(request, env);
+        return request.method === "DELETE"
+          ? handleDeleteMyPlayback(request, env)
+          : handleMyPlayback(request, env);
       }
       const detailMatch = pathname.match(/^\/api\/videos\/([^/]+)$/);
       if (detailMatch) {
-        return handleVideoDetail(detailMatch[1], env);
+        return handleVideoDetail(detailMatch[1], env, viewerHash);
       }
       return json({ error: "not found" }, 404);
     }

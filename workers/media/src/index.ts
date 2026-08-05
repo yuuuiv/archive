@@ -9,8 +9,10 @@ const SITE_ORIGIN = "https://archive.cerise-bouquet.xyz";
 const SEGMENT_CACHE_SECONDS = 60 * 60 * 24 * 30; // 30 天，分段内容不可变
 const FILE_PATH_CACHE_SECONDS = 60 * 50; // Telegram file_path 约 1 小时有效，缓存 50 分钟
 const GROWING_PLAYLIST_CACHE_SECONDS = 6; // 上传中的视频，播放列表短缓存以便播放器尽快发现新分段
-const COMPLETE_PLAYLIST_CACHE_SECONDS = SEGMENT_CACHE_SECONDS; // 已完结（有 ENDLIST）的播放列表不再变化
-const TARGET_DURATION = 5; // 对应 process.ps1 的 -hls_time 4，取整数上界
+// 已完结的播放列表内容确实不变，但"这个视频永远不会被重切"不成立：重切之后 URL 没变、
+// 内容变了，30 天 immutable 意味着只能等或者手动清缓存。分段本身用 ?v= 版本号防串，
+// 播放列表是入口没法带版本，所以给一个小时的上限——每小时每个 PoP 一次 D1 查询，不心疼。
+const COMPLETE_PLAYLIST_CACHE_SECONDS = 60 * 60;
 
 function corsHeaders(): Record<string, string> {
   return {
@@ -91,7 +93,7 @@ async function fetchTelegramFile(fileId: string, token: string): Promise<Respons
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders() });
     }
@@ -141,18 +143,28 @@ export default {
         .first<{ segment_count: number }>();
       if (!video) return new Response("Not found", { status: 404, headers: corsHeaders() });
       const { results } = await env.DB.prepare(
-        "SELECT seg_name, duration_seconds FROM segments WHERE slug = ? ORDER BY seg_name"
+        "SELECT seg_name, duration_seconds, file_id FROM segments WHERE slug = ? ORDER BY seg_name"
       )
         .bind(slug)
-        .all<{ seg_name: string; duration_seconds: number }>();
+        .all<{ seg_name: string; duration_seconds: number; file_id: string }>();
       const uploaded = results ?? [];
       const complete = uploaded.length >= video.segment_count;
 
-      const lines = ["#EXTM3U", "#EXT-X-VERSION:3", `#EXT-X-TARGETDURATION:${TARGET_DURATION}`];
+      // TARGETDURATION 必须 >= 最长的一段，规范要求。以前写死 5 靠注释跟
+      // process.ps1 的 -hls_time 4 同步，切片参数一改就是不合规的播放列表，
+      // 有些播放器会卡顿甚至拒播。直接从实际数据取整数上界。
+      const targetDuration = Math.max(
+        1,
+        Math.ceil(uploaded.reduce((max, s) => Math.max(max, s.duration_seconds), 0))
+      );
+
+      const lines = ["#EXTM3U", "#EXT-X-VERSION:3", `#EXT-X-TARGETDURATION:${targetDuration}`];
       if (!complete) lines.push("#EXT-X-PLAYLIST-TYPE:EVENT");
       for (const seg of uploaded) {
         lines.push(`#EXTINF:${seg.duration_seconds.toFixed(6)},`);
-        lines.push(`${url.origin}/${slug}/seg_${seg.seg_name}.ts`);
+        // ?v= 跟着 file_id 走：重切/重传后同一个 seg 名字对应新文件，URL 随之改变，
+        // 天然绕开 immutable 的边缘缓存。查库时忽略 query，所以旧链接照样能播。
+        lines.push(`${url.origin}/${slug}/seg_${seg.seg_name}.ts?v=${seg.file_id.slice(-12)}`);
       }
       if (complete) lines.push("#EXT-X-ENDLIST");
 
@@ -190,7 +202,10 @@ export default {
         ...corsHeaders(),
       },
     });
-    await cache.put(request, response.clone());
+    // 不能 await：cache.put 要把 body 完整消费掉才 resolve，而返回给浏览器的是同一条流的
+    // clone，await 等于「整段从 Telegram 拉完才发出第一个字节」。一段 2~3MB，冷拖拽的
+    // 等待因此是整段下载时间而不是首字节时间。交给 waitUntil 在后台写缓存，边拉边播。
+    ctx.waitUntil(cache.put(request, response.clone()));
     return response;
   },
 };

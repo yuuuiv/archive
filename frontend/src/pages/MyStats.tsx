@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { formatDuration, UnauthorizedError } from '../api'
+import { formatDuration, usePageTitle, UnauthorizedError } from '../api'
 import { TopBar } from '../components/TopBar'
 import { ChartIcon, ClockIcon, FilmIcon, PlayIcon } from '../components/icons'
 
@@ -36,6 +36,30 @@ export function MyStats() {
   const [data, setData] = useState<MyPlayback | null>(null)
   const [unauthed, setUnauthed] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [clearing, setClearing] = useState(false)
+  usePageTitle('我的观看数据')
+
+  async function clearHistory() {
+    if (!confirm('清除后无法恢复，全部观看记录和进度都会消失。确定？')) return
+    setClearing(true)
+    try {
+      const res = await fetch('/api/me/playback', { method: 'DELETE' })
+      if (!res.ok) throw new Error(`清除失败 (${res.status})`)
+      setData({
+        total_views: 0,
+        watched_videos: 0,
+        total_watch_seconds: 0,
+        last_viewed_at: 0,
+        completed_videos: 0,
+        completion_threshold: data?.completion_threshold ?? 0.9,
+        videos: [],
+      })
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setClearing(false)
+    }
+  }
 
   useEffect(() => {
     fetch('/api/me/playback')
@@ -100,10 +124,26 @@ export function MyStats() {
       <div className="mystats-page">
         <header className="admin-page-head">
           <h1>我的观看数据</h1>
+          {/* 原来写的是"只有你自己能看到" —— 这话不成立：观众标识是邮箱哈希，
+              站点管理员手上有全部邮箱，对上号就能还原任何人的记录。别在界面上
+              许一个做不到的承诺，改成说实话，同时给一个真的能按的清除按钮。 */}
           <p className="admin-page-sub">
-            只有你自己能看到这些数字 · 观看时长只统计真正在播放的时间
+            其他观众看不到这些数字 · 观看时长只统计真正在播放的时间 · 站点管理员能看到
           </p>
         </header>
+        <div className="mystats-actions">
+          <button
+            type="button"
+            className="mystats-danger"
+            onClick={clearHistory}
+            disabled={clearing || !data.total_views}
+          >
+            {clearing ? '清除中…' : '清除我的观看记录'}
+          </button>
+          <a href="/api/logout" className="mystats-quiet">
+            退出登录
+          </a>
+        </div>
 
         {data.total_views === 0 ? (
           <section className="admin-section">

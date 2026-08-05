@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchNav, UnauthorizedError, type FranchiseGroup } from '../api'
+import { fetchNav, usePageTitle, UnauthorizedError, type FranchiseGroup } from '../api'
 import { TopBar } from '../components/TopBar'
 import { Sidebar } from '../components/Sidebar'
 import { HeroScene } from '../components/HeroScene'
@@ -13,6 +13,7 @@ export function Home() {
   const [franchises, setFranchises] = useState<FranchiseGroup[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  usePageTitle('')
 
   useEffect(() => {
     fetchNav()
@@ -31,10 +32,7 @@ export function Home() {
 
   return (
     <div>
-      <TopBar
-        onMenuClick={authState === 'authed' ? () => setSidebarOpen(true) : undefined}
-        showAdminLink
-      />
+      <TopBar onMenuClick={authState === 'authed' ? () => setSidebarOpen(true) : undefined} />
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} franchises={franchises ?? []} />
       <HeroScene>
         <img src="/icon.png" alt="" className="hero-logo" />

@@ -2,7 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 import Artplayer from 'artplayer'
 import Hls from 'hls.js'
-import { fetchVideo, formatDuration, isVideoComplete, UnauthorizedError, type VideoDetail } from '../api'
+import {
+  fetchVideo,
+  formatDuration,
+  isVideoComplete,
+  usePageTitle,
+  UnauthorizedError,
+  type VideoDetail,
+} from '../api'
 import { TopBar } from '../components/TopBar'
 import { StaggeredText } from '../components/StaggeredText'
 
@@ -13,6 +20,8 @@ export function VideoPlayer() {
   const [video, setVideo] = useState<VideoDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [unauthed, setUnauthed] = useState(false)
+  const [resumedFrom, setResumedFrom] = useState(0)
+  usePageTitle(video?.title ?? '')
 
   useEffect(() => {
     if (!slug) return
@@ -31,11 +40,20 @@ export function VideoPlayer() {
     if (!video || !containerRef.current) return
 
     let hls: Hls | null = null
-    // 起播位置夹在片长内，避免手改 URL 直接跳到结尾或负数
+
+    // 续播位置：?t= 优先（"继续观看"卡片点进来的），否则用服务端记的这个人的进度。
+    // 服务端那份是跨设备的——手机上看到一半，电脑打开接着播。
+    // 快到片尾就别续了，不然点进来直接是片尾字幕；起点也夹在片长内，防手改 URL。
+    const requested = Number(new URLSearchParams(window.location.search).get('t'))
+    const fromServer =
+      video.progress_seconds > 30 && video.progress_seconds < video.duration_seconds * 0.95
+        ? video.progress_seconds
+        : 0
     const resumeAt = Math.min(
-      Math.max(0, Number(new URLSearchParams(window.location.search).get('t')) || 0),
+      Math.max(0, Number.isFinite(requested) && requested > 0 ? requested : fromServer),
       Math.max(0, video.duration_seconds - 5)
     )
+    setResumedFrom(resumeAt)
 
     const art = new Artplayer({
       container: containerRef.current,
@@ -163,6 +181,20 @@ export function VideoPlayer() {
                 </span>
               )}
             </p>
+            {resumedFrom > 0 && (
+              <p className="player-resumed">
+                已从 {formatDuration(resumedFrom)} 继续播放
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (artRef.current) artRef.current.seek = 0
+                    setResumedFrom(0)
+                  }}
+                >
+                  从头播放
+                </button>
+              </p>
+            )}
           </>
         )}
       </div>

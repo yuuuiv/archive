@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { formatDuration, isVideoComplete, type FranchiseGroup } from '../api'
+import { formatDuration, isVideoComplete, usePageTitle, type FranchiseGroup } from '../api'
 import { TopBar } from '../components/TopBar'
 import {
   CalendarIcon,
@@ -72,6 +72,8 @@ type AdminData = {
   videos: FranchiseGroup[]
   playback: PlaybackStats | null
   users: UserStats | null
+  /** 用密码换来的短期凭据，只在密码登录那一次返回 */
+  token?: string
 }
 
 type UserRow = {
@@ -98,6 +100,7 @@ async function postAdmin<T>(path: string, body: Record<string, unknown>): Promis
     body: JSON.stringify(body),
   })
   if (res.status === 401) throw new Error('密码不对')
+  if (res.status === 429) throw new Error('尝试次数过多，等 15 分钟再试')
   if (!res.ok) throw new Error(`请求失败 (${res.status})`)
   return res.json()
 }
@@ -121,14 +124,17 @@ export function Admin() {
   const [checking, setChecking] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
+  usePageTitle('管理员面板')
 
   useEffect(() => {
+    // 存的是服务端签发的 12 小时 token，不是密码本身：以前这里放明文密码，
+    // 任何 XSS 或共用浏览器都能直接拿到长期有效的凭据。
     const saved = localStorage.getItem(STORAGE_KEY)
     if (!saved) {
       setChecking(false)
       return
     }
-    postAdmin<AdminData>('/api/admin/stats', { password: saved })
+    postAdmin<AdminData>('/api/admin/stats', { token: saved })
       .then((r) => {
         setData(r)
         setAuthed(saved)
@@ -143,9 +149,11 @@ export function Admin() {
     setError(null)
     try {
       const result = await postAdmin<AdminData>('/api/admin/stats', { password })
-      localStorage.setItem(STORAGE_KEY, password)
+      if (!result.token) throw new Error('服务端没有签发 token')
+      localStorage.setItem(STORAGE_KEY, result.token)
       setData(result)
-      setAuthed(password)
+      setAuthed(result.token)
+      setPassword('')
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -157,7 +165,7 @@ export function Admin() {
     if (!authed || refreshing) return
     setRefreshing(true)
     try {
-      setData(await postAdmin<AdminData>('/api/admin/stats', { password: authed }))
+      setData(await postAdmin<AdminData>('/api/admin/stats', { token: authed }))
     } catch {
       /* 刷新失败保留上一次数据，不清空视图 */
     } finally {
@@ -254,7 +262,7 @@ export function Admin() {
           {tab === 'overview' && <Overview data={data} />}
           {tab === 'playback' && <PlaybackPanel playback={data.playback} />}
           {tab === 'content' && <ContentDetail franchises={data.videos} />}
-          {tab === 'users' && <UsersPanel password={authed} stats={data.users} />}
+          {tab === 'users' && <UsersPanel token={authed} stats={data.users} />}
         </main>
       </div>
     </div>
@@ -631,7 +639,7 @@ function ContentDetail({ franchises }: { franchises: FranchiseGroup[] }) {
   )
 }
 
-function UsersPanel({ password, stats }: { password: string; stats: UserStats | null }) {
+function UsersPanel({ token, stats }: { token: string; stats: UserStats | null }) {
   const [rows, setRows] = useState<UserRow[]>([])
   const [count, setCount] = useState(0)
   const [page, setPage] = useState(1)
@@ -645,7 +653,7 @@ function UsersPanel({ password, stats }: { password: string; stats: UserStats | 
     setError(null)
     try {
       const res = await postAdmin<{ results: UserRow[]; count: number }>('/api/admin/users', {
-        password,
+        token,
         limit: PAGE_SIZE,
         offset: (page - 1) * PAGE_SIZE,
         query: submittedQuery,
@@ -658,7 +666,7 @@ function UsersPanel({ password, stats }: { password: string; stats: UserStats | 
     } finally {
       setLoading(false)
     }
-  }, [password, page, submittedQuery])
+  }, [token, page, submittedQuery])
 
   useEffect(() => {
     load()

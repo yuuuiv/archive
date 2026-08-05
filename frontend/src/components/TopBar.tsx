@@ -1,6 +1,6 @@
 import { Link } from 'react-router'
 import { useTheme } from '../theme/ThemeProvider'
-import { ChevronLeftIcon, MenuIcon, MoonIcon, SettingsIcon, SunIcon } from './icons'
+import { ChevronLeftIcon, MenuIcon, MoonIcon, SettingsIcon, SunIcon, UserChartIcon } from './icons'
 
 type Props = {
   back?: { to: string; label: string }
@@ -38,6 +38,9 @@ export function TopBar({ back, onMenuClick, showAdminLink }: Props) {
           )}
         </div>
         <div className="topbar-right">
+          <Link to="/me" className="topbar-admin-entry" aria-label="我的观看数据">
+            <UserChartIcon width={18} height={18} />
+          </Link>
           {showAdminLink && (
             <Link to="/admin" className="topbar-admin-entry" aria-label="管理员面板">
               <SettingsIcon width={18} height={18} />

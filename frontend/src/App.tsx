@@ -3,6 +3,7 @@ import { Home } from './pages/Home'
 import { LiveDetail } from './pages/LiveDetail'
 import { VideoPlayer } from './pages/VideoPlayer'
 import { Admin } from './pages/Admin'
+import { MyStats } from './pages/MyStats'
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/f/:franchiseSlug/l/:liveSlug/:fileSlug?" element={<LiveDetail />} />
         <Route path="/v/:slug" element={<VideoPlayer />} />
+        <Route path="/me" element={<MyStats />} />
         <Route path="/admin" element={<Admin />} />
       </Routes>
     </BrowserRouter>

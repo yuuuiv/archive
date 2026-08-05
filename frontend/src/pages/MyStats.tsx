@@ -150,7 +150,11 @@ export function MyStats() {
                   {inProgress.slice(0, 6).map((v) => {
                     const pct = (v.max_position / v.duration_seconds) * 100
                     return (
-                      <Link key={v.slug} to={`/v/${v.slug}`} className="mystats-resume-card">
+                      <Link
+                        key={v.slug}
+                        to={`/v/${v.slug}?t=${Math.floor(v.max_position)}`}
+                        className="mystats-resume-card"
+                      >
                         <div className="mystats-resume-title">{v.title}</div>
                         <div className="admin-mini-track">
                           <span style={{ width: `${pct}%` }} />

@@ -31,6 +31,11 @@ export function VideoPlayer() {
     if (!video || !containerRef.current) return
 
     let hls: Hls | null = null
+    // 起播位置夹在片长内，避免手改 URL 直接跳到结尾或负数
+    const resumeAt = Math.min(
+      Math.max(0, Number(new URLSearchParams(window.location.search).get('t')) || 0),
+      Math.max(0, video.duration_seconds - 5)
+    )
 
     const art = new Artplayer({
       container: containerRef.current,
@@ -41,8 +46,9 @@ export function VideoPlayer() {
         m3u8: (videoEl, url) => {
           hls = new Hls({
             // 上传中的视频播放列表是 EVENT 类型（没有 ENDLIST），hls.js 默认按直播处理会跳到最新位置，
-            // 但这其实是点播内容只是清单还在长，强制从头开始播
-            startPosition: 0,
+            // 但这其实是点播内容只是清单还在长，强制从头开始播。
+            // ?t= 是"继续观看"带过来的服务端进度，有就从那儿起播（跨设备也能接着看）。
+            startPosition: resumeAt,
             xhrSetup: (xhr) => {
               xhr.withCredentials = true
             },

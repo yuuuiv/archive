@@ -16,14 +16,18 @@ import sys
 import tempfile
 import threading
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
 
 # Windows 后台任务重定向输出到文件时，默认走系统 ANSI 代码页（如 GBK），遇到 emoji 或
 # wrangler 彩色 CLI 输出里的特殊字符会直接 UnicodeEncodeError 崩溃整个进程。强制 UTF-8。
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+# line_buffering：输出重定向到文件时默认是 8KB 块缓冲，一跑就是几小时的任务，
+# 日志攒够 8KB 才落盘等于全程看不到进度（进度行才 ~40 字节，要两百行才刷一次）。
+sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)  # type: ignore[attr-defined]
+sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)  # type: ignore[attr-defined]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TELEGRAM_BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024
@@ -216,17 +220,26 @@ class AsyncD1Flusher:
 
 
 class RateLimiter:
-    """Telegram 频道发消息限速 ~20/min，默认每次间隔 3.5s 留余量。"""
+    """Telegram 频道发消息限速 ~20/min，默认每次间隔 3.5s 留余量。
+
+    卡的是"发起"的间隔，不是"完成"的间隔——多个上传线程共用同一个实例，
+    排队拿号，所以并发多少个在飞都不会把消息速率抬上去。
+    持锁 sleep 是故意的：锁本身就是这个队列。
+    """
 
     def __init__(self, min_interval: float):
         self.min_interval = min_interval
         self._last = 0.0
+        self._lock = threading.Lock()
 
     def wait(self):
-        elapsed = time.monotonic() - self._last
-        if elapsed < self.min_interval:
-            time.sleep(self.min_interval - elapsed)
-        self._last = time.monotonic()
+        with self._lock:
+            now = time.monotonic()
+            wait_for = self._last + self.min_interval - now
+            if wait_for > 0:
+                time.sleep(wait_for)
+                now = self._last + self.min_interval  # 按名义节拍推进，不累积漂移
+            self._last = now
 
 
 def with_retry(fn, retries=5, base_delay=5):
@@ -279,7 +292,12 @@ def main():
         ),
     )
     parser.add_argument("--media-base", default="https://media.cerise-bouquet.xyz")
-    parser.add_argument("--rate-interval", type=float, default=3.5, help="两次上传间隔秒数")
+    parser.add_argument("--rate-interval", type=float, default=3.5, help="两次上传发起的间隔秒数")
+    parser.add_argument(
+        "--concurrency", type=int, default=4,
+        help="同时在飞的上传数。只重叠传输时间，发起间隔仍由 --rate-interval 卡死，"
+             "所以不会提高频道消息速率；分段越大收益越明显",
+    )
     parser.add_argument("--d1-batch-size", type=int, default=D1_BATCH_SIZE)
     parser.add_argument(
         "--keep-local",
@@ -325,7 +343,15 @@ def main():
     save_lock = threading.Lock()
 
     def save():
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 先写临时文件再原子替换：manifest 是断点续传的唯一凭据，直接 write_text
+        # 会先把原文件截断，这中间被 Ctrl-C / 断电打断就只剩半个 JSON，
+        # 重跑时解析失败 = 几千段白传。这个截断窗口每段都出现一次，跑几天必然撞上。
+        tmp = manifest_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Windows 上只要有别的进程正开着目标文件（杀毒扫描、编辑器、备份、看进度的脚本），
+        # os.replace 就会 PermissionError。这种占用都是几十毫秒级的，退避重试即可；
+        # 真的一直替换不上就让它抛出来——manifest 写不进去等于断点丢了，不能装作没事继续传。
+        with_retry(lambda: tmp.replace(manifest_path), retries=5, base_delay=0.2)
 
     def save_locked():
         with save_lock:
@@ -379,17 +405,41 @@ def main():
     if synced:
         print(f"  {len(synced)} segments already synced to D1, backfilled {len(manifest['segments']) - len(synced)} more")
 
-    for seg_path in segments:
+    # 一次只传一段时，节拍 = max(限速间隔, 这一段传完要多久)。分段大了之后
+    # 后者才是主导（实测 2.3MB 的段单次要 6s 上下，限速的 3.5s 根本没在起作用），
+    # 上行等于一直有一大半时间闲着。并发几个在飞，把"发起间隔"和"单次耗时"解耦：
+    # 发起仍由 limiter 全局卡 3.5s（消息速率不变，不会触发 429），节拍则回到限速上限。
+    #
+    # 结果严格按提交顺序取回，manifest 和 D1 只会连续向前推进——边传边看的 EVENT
+    # 播放列表不允许事后往中间插段，乱序落库会让已经在播的人拿到带洞的列表。
+    todo = [p for p in segments if not manifest["segments"].get(p.stem.split("_")[1])]
+
+    def upload_one(seg_path: Path):
+        return seg_path, with_retry(lambda: send_document(session, token, chat_id, seg_path, limiter))
+
+    def commit_one():
+        seg_path, file_id = inflight.popleft().result()
         idx = seg_path.stem.split("_")[1]  # "00007" 形式，保留前导零匹配文件名
-        if manifest["segments"].get(idx):
-            continue
-        file_id = with_retry(lambda: send_document(session, token, chat_id, seg_path, limiter))
         manifest["segments"][idx] = file_id
         save_locked()
         pending_d1.append((idx, file_id, durations.get(seg_path.name, 4.0)))
         print(f"  [{len(manifest['segments'])}/{len(segments)}] {seg_path.name} uploaded")
         if len(pending_d1) >= args.d1_batch_size:
             flusher.flush_async(args.slug, pending_d1, manifest)
+
+    inflight: deque = deque()
+    pool = ThreadPoolExecutor(max_workers=args.concurrency)
+    try:
+        for seg_path in todo:
+            inflight.append(pool.submit(upload_one, seg_path))
+            if len(inflight) >= args.concurrency:
+                commit_one()
+        while inflight:
+            commit_one()
+    finally:
+        # 中途抛错就别再往上传了，直接连排队的一起取消；已经传上去但没来得及
+        # 记进 manifest 的最多 concurrency-1 段，重跑会重传，不影响正确性。
+        pool.shutdown(wait=False, cancel_futures=True)
 
     flusher.flush_async(args.slug, pending_d1, manifest)
     flusher.join()

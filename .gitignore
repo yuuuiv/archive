@@ -24,7 +24,3 @@ Thumbs.db
 
 *.htm
 covers/
-
-manifests/
-*.json
-*.meta.json
